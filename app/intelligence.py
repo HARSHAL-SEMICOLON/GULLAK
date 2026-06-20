@@ -1,15 +1,14 @@
 import time as _time
-import pandas as pd
 from datetime import datetime, timedelta
-import numpy as np
-from sklearn.cluster import KMeans, DBSCAN
-from sklearn.preprocessing import normalize
+from collections import defaultdict, Counter
+from typing import List, Dict, Any, Optional, Tuple
+from app.models import Transaction
+
+# Heavy ML deps are lazy — only imported on first use to keep startup memory low
 try:
     from sentence_transformers import SentenceTransformer as _ST
 except ImportError:
     _ST = None  # type: ignore
-from typing import List, Dict, Any, Optional, Tuple
-from app.models import Transaction
 
 # ── Model registry: versioned model descriptors ──────────────────────────────
 MODEL_REGISTRY = [
@@ -179,6 +178,7 @@ class MerchantEmbedder:
 
         # Precompute embeddings for categories
         if self.model:
+            import numpy as np
             self.cat_embeddings = {}
             for cat, examples in self.category_examples.items():
                 emb = self.model.encode(examples)
@@ -222,6 +222,7 @@ class MerchantEmbedder:
                 pass
             return result
 
+        import numpy as np
         name_emb = self.model.encode([merchant_name])[0]
 
         best_cat = "Other"
@@ -337,15 +338,17 @@ class MerchantEmbedder:
         if not self.model or len(merchant_names) < 2:
             return {0: merchant_names}
 
+        import numpy as np
+        from sklearn.cluster import KMeans, DBSCAN
+        from sklearn.preprocessing import normalize
+
         embeddings = self.model.encode(merchant_names)
-        # L2-normalise so cosine distance ≈ euclidean distance
         embeddings_norm = normalize(embeddings, norm="l2")
 
         if algorithm == "dbscan":
             db = DBSCAN(eps=0.35, min_samples=2, metric="cosine")
             labels_arr = db.fit_predict(embeddings_norm)
         else:
-            # KMeans fallback (default)
             n_clusters = min(n_clusters, len(merchant_names))
             km = KMeans(n_clusters=n_clusters, random_state=42, n_init="auto")
             labels_arr = km.fit_predict(embeddings_norm)
@@ -387,32 +390,31 @@ class SubscriptionDetector:
 
     @staticmethod
     def detect(transactions: List[Transaction]) -> List[Dict[str, Any]]:
-        df = pd.DataFrame([t.model_dump() for t in transactions if t.transaction_type == "debit"])
-        if df.empty:
+        from datetime import date as _date
+        debits = [t for t in transactions if t.transaction_type == "debit"]
+        if not debits:
             return []
 
-        df["date"] = pd.to_datetime(df["date"])
+        groups: Dict[tuple, list] = defaultdict(list)
+        for t in debits:
+            groups[(t.merchant_clean, t.amount)].append(t)
+
         subscriptions = []
-
-        for merchant, group in df.groupby("merchant_clean"):
-            if len(group) >= 2:
-                amounts = group["amount"].value_counts()
-                for amt, count in amounts.items():
-                    if count >= 2:
-                        sub_txs = group[group["amount"] == amt].sort_values("date")
-                        dates = sub_txs["date"].tolist()
-                        days_diff = [(dates[i] - dates[i - 1]).days for i in range(1, len(dates))]
-                        avg_diff = np.mean(days_diff)
-
-                        if 25 <= avg_diff <= 35:
-                            subscriptions.append({
-                                "merchant": merchant,
-                                "amount": amt,
-                                "frequency": "monthly",
-                                "occurrences": count,
-                                "confidence": 0.95 if count > 2 else 0.80,
-                            })
-
+        for (merchant, amt), txs in groups.items():
+            if len(txs) >= 2:
+                def _to_date(v):
+                    return v if isinstance(v, _date) else _date.fromisoformat(str(v))
+                dates = sorted(_to_date(t.date) for t in txs)
+                diffs = [(dates[i] - dates[i - 1]).days for i in range(1, len(dates))]
+                avg_diff = sum(diffs) / len(diffs)
+                if 25 <= avg_diff <= 35:
+                    subscriptions.append({
+                        "merchant": merchant,
+                        "amount": amt,
+                        "frequency": "monthly",
+                        "occurrences": len(txs),
+                        "confidence": 0.95 if len(txs) > 2 else 0.80,
+                    })
         return subscriptions
 
 
@@ -427,13 +429,10 @@ class BehavioralAnalyzer:
             t for t in transactions
             if t.time and t.transaction_type == "debit" and (t.time.hour >= 23 or t.time.hour < 5)
         ]
-
         if not late_night_txs:
             return {"pattern": "late_night", "found": False}
-
         total_amount = sum(t.amount for t in late_night_txs)
-        categories = pd.Series([t.category for t in late_night_txs]).value_counts().to_dict()
-
+        categories = dict(Counter(t.category for t in late_night_txs))
         return {
             "pattern": "late_night",
             "found": True,
@@ -445,75 +444,65 @@ class BehavioralAnalyzer:
     @staticmethod
     def detect_shopping_sprees(transactions: List[Transaction]) -> List[Dict[str, Any]]:
         """Detects clustered spending in non-essential categories in a short time window."""
-        df = pd.DataFrame([t.model_dump() for t in transactions if t.transaction_type == "debit"])
-        if df.empty:
-            return []
+        discretionary_cats = {"Clothing", "Entertainment", "Shopping", "Tech / Devices"}
+        by_date: Dict[str, list] = defaultdict(list)
+        for t in transactions:
+            if t.transaction_type == "debit" and t.category in discretionary_cats:
+                by_date[str(t.date)].append(t)
 
-        df["date"] = pd.to_datetime(df["date"])
         sprees = []
-
-        for date, group in df.groupby("date"):
-            discretionary = group[group["category"].isin(["Clothing", "Entertainment", "Shopping", "Tech / Devices"])]
-            if len(discretionary) >= 3 and discretionary["amount"].sum() > 2000:
+        for date_str, txs in by_date.items():
+            total = sum(t.amount for t in txs)
+            if len(txs) >= 3 and total > 2000:
                 sprees.append({
-                    "date": date.strftime("%Y-%m-%d"),
-                    "transaction_count": len(discretionary),
-                    "total_amount": round(discretionary["amount"].sum(), 2),
-                    "merchants": discretionary["merchant_clean"].tolist(),
+                    "date": date_str,
+                    "transaction_count": len(txs),
+                    "total_amount": round(total, 2),
+                    "merchants": [t.merchant_clean for t in txs],
                 })
-
         return sprees
 
     @staticmethod
     def cluster_spending_personality(transactions: List[Transaction]) -> str:
-        """Uses KMeans to classify user personality based on category spending proportions."""
-        df = pd.DataFrame([t.model_dump() for t in transactions if t.transaction_type == "debit"])
-        if df.empty:
+        debits = [t for t in transactions if t.transaction_type == "debit"]
+        if not debits:
             return "Unknown"
-
-        total_spend = df["amount"].sum()
-        if total_spend == 0:
+        total = sum(t.amount for t in debits)
+        if total == 0:
             return "Minimalist"
-
-        cat_spend = df.groupby("category")["amount"].sum() / total_spend
-
-        if cat_spend.get("Food", 0) > 0.4:
+        cat: Dict[str, float] = defaultdict(float)
+        for t in debits:
+            cat[t.category] += t.amount
+        if cat.get("Food", 0) / total > 0.4:
             return "Foodie"
-        if cat_spend.get("Clothing", 0) + cat_spend.get("Tech / Devices", 0) > 0.4:
+        if (cat.get("Clothing", 0) + cat.get("Tech / Devices", 0)) / total > 0.4:
             return "Shopper"
-        if cat_spend.get("Transport", 0) > 0.2:
+        if cat.get("Transport", 0) / total > 0.2:
             return "Commuter"
-
         return "Balanced"
 
     @staticmethod
     def detect_wasteful_spending(transactions: List[Transaction]) -> Dict[str, Any]:
         """Detects repetitive food orders or convenience addiction."""
-        df = pd.DataFrame([t.model_dump() for t in transactions if t.transaction_type == "debit"])
-        if df.empty:
-            return {"found": False}
+        from datetime import date as _date
+        food_names = {"swiggy", "zomato", "uber eats", "eatfit", "blinkit", "zepto", "instamart"}
+        food_txs = [
+            t for t in transactions
+            if t.transaction_type == "debit" and t.merchant_clean.lower() in food_names
+        ]
+        if not food_txs:
+            return {"found": False, "avg_weekly_food_orders": 0, "total_food_delivery_spent": 0}
 
-        df["date"] = pd.to_datetime(df["date"])
-        food_delivery = df[df["merchant_clean"].str.lower().isin(
-            ["swiggy", "zomato", "uber eats", "eatfit", "blinkit", "zepto", "instamart"]
-        )]
+        weekly: Dict[int, int] = defaultdict(int)
+        for t in food_txs:
+            d = t.date if isinstance(t.date, _date) else _date.fromisoformat(str(t.date))
+            weekly[d.isocalendar()[1]] += 1
 
-        repetitive_food = False
-        avg_weekly_food_orders = 0
-        total_spent = 0
-
-        if not food_delivery.empty:
-            food_delivery = food_delivery.copy()
-            food_delivery["week"] = food_delivery["date"].dt.isocalendar().week
-            weekly_food = food_delivery.groupby("week").size()
-            avg_weekly_food_orders = float(weekly_food.mean())
-            total_spent = float(food_delivery["amount"].sum())
-            if avg_weekly_food_orders >= 3:
-                repetitive_food = True
-
+        avg_weekly = sum(weekly.values()) / len(weekly)
+        total_spent = sum(t.amount for t in food_txs)
         return {
-            "found": repetitive_food,
-            "avg_weekly_food_orders": round(avg_weekly_food_orders, 1),
+            "found": avg_weekly >= 3,
+            "avg_weekly_food_orders": round(avg_weekly, 1),
             "total_food_delivery_spent": round(total_spent, 2),
         }
 
@@ -531,17 +520,23 @@ class InsightGenerator:
         personality = BehavioralAnalyzer.cluster_spending_personality(transactions)
         wasteful = BehavioralAnalyzer.detect_wasteful_spending(transactions)
 
-        df = pd.DataFrame([t.model_dump() for t in transactions if t.transaction_type == "debit"])
+        debits = [t for t in transactions if t.transaction_type == "debit"]
+        total_spend = sum(t.amount for t in debits)
 
-        total_spend = df["amount"].sum() if not df.empty else 0
-        top_cats = df.groupby("category")["amount"].sum().nlargest(3).to_dict() if not df.empty else {}
+        cat_amounts: Dict[str, float] = defaultdict(float)
+        for t in debits:
+            cat_amounts[t.category] += t.amount
+        top_cats = dict(sorted(cat_amounts.items(), key=lambda x: -x[1])[:3])
 
-        regret_count = int(df[df["regret_status"] == "regret"]["amount"].count()) if "regret_status" in df.columns else 0
-        regret_amount = float(df[df["regret_status"] == "regret"]["amount"].sum()) if "regret_status" in df.columns else 0
+        regret_txs = [t for t in debits if getattr(t, "regret_status", None) == "regret"]
+        regret_count = len(regret_txs)
+        regret_amount = sum(t.amount for t in regret_txs)
 
-        # Other-category stats
-        other_count = int((df["category"].str.startswith("Other") | df["category"].str.startswith("Unsure")).sum()) if not df.empty else 0
-        other_pct = round(other_count / max(len(df), 1) * 100, 1)
+        other_count = sum(
+            1 for t in debits
+            if (t.category or "").startswith("Other") or (t.category or "").startswith("Unsure")
+        )
+        other_pct = round(other_count / max(len(debits), 1) * 100, 1)
 
         return {
             "profile": personality,
