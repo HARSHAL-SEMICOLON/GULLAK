@@ -1,0 +1,25 @@
+services:
+  # ── Backend (FastAPI) ────────────────────────────────────────────────────────
+  - type: web
+    name: gullak-api
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements-deploy.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false          # set manually in Render dashboard
+      - key: ALLOWED_ORIGINS
+        sync: false          # set to your frontend URL after it's deployed
+
+  # ── Frontend (Next.js) ───────────────────────────────────────────────────────
+  - type: web
+    name: gullak-frontend
+    env: node
+    plan: free
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        sync: false          # set to your backend URL after it's deployed

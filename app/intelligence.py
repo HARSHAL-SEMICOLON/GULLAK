@@ -4,7 +4,10 @@ from datetime import datetime, timedelta
 import numpy as np
 from sklearn.cluster import KMeans, DBSCAN
 from sklearn.preprocessing import normalize
-from sentence_transformers import SentenceTransformer
+try:
+    from sentence_transformers import SentenceTransformer as _ST
+except ImportError:
+    _ST = None  # type: ignore
 from typing import List, Dict, Any, Optional, Tuple
 from app.models import Transaction
 
@@ -33,13 +36,15 @@ MODEL_REGISTRY = [
 # ── Initialize the model globally to avoid reloading ─────────────────────────
 _model_load_start = _time.perf_counter()
 try:
-    embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+    if _ST is None:
+        raise ImportError("sentence-transformers not installed")
+    embedding_model = _ST("all-MiniLM-L6-v2")
     _model_load_ms = round((_time.perf_counter() - _model_load_start) * 1000, 2)
     print(f"[intelligence] Embedding model loaded in {_model_load_ms}ms")
 except Exception as e:
     embedding_model = None
     _model_load_ms = 0
-    print(f"[intelligence] WARNING: Failed to load sentence transformer: {e}")
+    print(f"[intelligence] WARNING: {e}")
     print("[intelligence] Graceful degradation → keyword fallback will be used.")
 
 # ── Zero-shot classification (lazy import — optional dependency) ──────────────

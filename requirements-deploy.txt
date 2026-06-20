@@ -1,0 +1,14 @@
+# Production requirements for Render (no heavy ML deps)
+# sentence-transformers / torch are excluded to stay within Render's free tier limits.
+# The app gracefully falls back to fuzzy + keyword matching (still 200+ merchants).
+
+fastapi
+uvicorn[standard]
+pdfplumber
+pandas
+numpy
+rapidfuzz
+scikit-learn
+pydantic
+pydantic[email]
+groq
