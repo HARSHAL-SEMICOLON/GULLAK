@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 from app.parser import parse_gpay_statement
 from app.models import Transaction, Goal, Budget, DailyLogRequest, RegretUpdateRequest, Profile
 import uuid
+import hashlib
 from datetime import datetime, date
 from app.intelligence import SubscriptionDetector, BehavioralAnalyzer, InsightGenerator, MerchantEmbedder, MODEL_REGISTRY
 from app.observability import get_prediction_stats, log_model_load
@@ -16,9 +17,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Gullak API", version="3.0")
 
+_CORS_DEFAULTS = "http://localhost:3000,http://127.0.0.1:3000"
+_allowed_origins = os.getenv("ALLOWED_ORIGINS", _CORS_DEFAULTS).split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in _allowed_origins],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -242,12 +245,30 @@ async def upload_statement(
     file: UploadFile = File(...),
     profile_id: str = Query("default"),
 ):
+    raw_bytes = await file.read()
+    pdf_hash = hashlib.sha256(raw_bytes).hexdigest()[:16]
+
+    # Deduplication: check if this exact PDF was already ingested for this profile
+    conn = get_conn()
+    existing = conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE profile_id=? AND source=?",
+        (profile_id, f"hash:{pdf_hash}"),
+    ).fetchone()[0]
+    conn.close()
+    if existing > 0:
+        return {
+            "status": "duplicate",
+            "message": "This PDF has already been uploaded.",
+            "count": 0,
+            "source": f"hash:{pdf_hash}",
+        }
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(await file.read())
+        tmp.write(raw_bytes)
         tmp_path = tmp.name
 
-    # Use filename as the source tag so we can delete by it later
-    source_tag = file.filename or f"upload_{uuid.uuid4().hex[:6]}"
+    # Use content-hash as the source tag so re-uploads of same file are idempotent
+    source_tag = f"hash:{pdf_hash}"
 
     try:
         transactions = parse_gpay_statement(tmp_path)

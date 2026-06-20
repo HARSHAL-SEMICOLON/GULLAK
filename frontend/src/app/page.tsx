@@ -13,6 +13,7 @@ import { GoalsPanel } from "@/components/GoalsPanel";
 import { ProfileManager } from "@/components/ProfileManager";
 import { OtherClusters } from "@/components/OtherClusters";
 import { Upload, RefreshCw, ChevronDown, Search, SlidersHorizontal, Plus, X } from "lucide-react";
+import { toast } from "sonner";
 
 type Tab = "home" | "transactions" | "analytics" | "insights" | "goals";
 
@@ -98,11 +99,22 @@ export default function GullakApp() {
     if (!file) return;
     setUploading(true);
     try {
-      await gullakApi.uploadStatement(file, activeProfileId);
-      await fetchAll();
+      const res = await gullakApi.uploadStatement(file, activeProfileId);
+      if (res.data.status === "duplicate") {
+        toast.warning("Already uploaded", {
+          description: "This PDF has already been imported. No changes made.",
+        });
+      } else {
+        toast.success(`Imported ${res.data.count} transactions`, {
+          description: "Your statement has been processed successfully.",
+        });
+        await fetchAll();
+      }
       setFile(null);
     } catch {
-      alert("Upload failed. Is the backend running on :8001?");
+      toast.error("Upload failed", {
+        description: "Is the backend running on :8001?",
+      });
     } finally {
       setUploading(false);
     }

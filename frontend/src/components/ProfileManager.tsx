@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import { gullakApi } from "@/lib/api";
 import { RefreshCw, Trash2, Plus, X, FileText, Check, ChevronRight } from "lucide-react";
+import { toast } from "sonner";
 
 const AVATAR_OPTIONS = ["👤", "👦", "👩", "🧑", "👨‍💼", "👩‍💼", "🧔", "👱", "🦊", "🐼", "🦁", "🐯", "🚀", "💎", "🌟", "🔥"];
 
@@ -92,7 +93,7 @@ export function ProfileManager({ currentProfileId, onProfileSwitch, onClose }: P
       await loadProfiles();
       setConfirmDelete(null);
     } catch (e: any) {
-      alert(e?.response?.data?.detail || "Cannot delete profile");
+      toast.error(e?.response?.data?.detail || "Cannot delete profile");
     } finally {
       setDeletingProfile(null);
     }
