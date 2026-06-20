@@ -1,0 +1,34 @@
+# ── Core API ──────────────────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+
+# ── PDF Parsing ───────────────────────────────────────────────────────────────
+pdfplumber
+
+# ── Data Processing ───────────────────────────────────────────────────────────
+pandas
+numpy
+rapidfuzz
+
+# ── ML / Embeddings ───────────────────────────────────────────────────────────
+sentence-transformers
+scikit-learn          # KMeans, DBSCAN, normalize
+
+# ── Data Validation ───────────────────────────────────────────────────────────
+pydantic
+pydantic[email]
+
+# ── Database ──────────────────────────────────────────────────────────────────
+sqlalchemy
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest
+pytest-asyncio
+httpx                 # required by FastAPI TestClient
+
+# ── LLM (Groq free tier — set GROQ_API_KEY env var to enable) ─────────────────
+groq
+
+# ── Optional: Zero-shot classification (enhances 'Unsure' category resolution)
+# transformers        # Uncomment to enable zero-shot classification
+# torch               # Required by transformers
